@@ -114,7 +114,25 @@ end
 
 local try_loadstring = [[
 local function try_loadstring(s, component, name)
-  local success, result = pcall(loadstring(s), name, _G.packer_plugins[name])
+  vim.api.nvim_notify('try for ' .. name, vim.log.levels.INFO, {})
+  vim.api.nvim_notify('return ' .. s, vim.log.levels.INFO, {})
+  local ok, module = pcall(load, 'return ' .. s)
+  vim.api.nvim_notify(vim.inspect(module), vim.log.levels.INFO, {})
+
+  if not ok then
+    vim.api.nvim_notify('failed to load module', vim.log.levels.ERROR, {})
+    return
+  end
+
+  local ok, callable = pcall(module)
+  vim.api.nvim_notify(vim.inspect(callable), vim.log.levels.INFO, {})
+
+  if not ok then
+    vim.api.nvim_notify('failed to load callable', vim.log.levels.ERROR, {})
+    return
+  end
+
+  local success, result = pcall(callable, name, _G.packer_plugins[name])
   if not success then
     vim.schedule(function()
       vim.api.nvim_notify('packer.nvim: Error running ' .. component .. ' for ' .. name .. ': ' .. result, vim.log.levels.ERROR, {})
@@ -240,6 +258,40 @@ local function detect_bufread(plugin_path)
   return false
 end
 
+-- The original can be retrieved by `load('return ' .. stringify(something))()`
+local function stringify(something)
+  if type(something) == 'function' then
+    -- TODO does not work if this is not a recursive call
+    return 'loadstring(' .. vim.inspect(string.dump(something, true)) .. ')'
+  elseif type(something) == 'table' and getmetatable(something) ~= nil then
+    local meta_table = getmetatable(something)
+    local pure_table = setmetatable(something, nil)
+    return (
+      'setmetatable(' ..
+      stringify(pure_table) .. ', ' ..
+      stringify(meta_table) .. ')'
+    )
+  elseif type(something) == 'table' then
+    local stringified_table = '{ '
+
+    for key, value in pairs(something) do
+      key = type(key) == 'number' and key or ('\"' .. key .. '\"')
+      stringified_table = (
+        stringified_table ..
+        '[' .. key .. '] = ' ..
+        stringify(value) .. ', '
+      )
+    end
+
+    stringified_table = stringified_table .. ' }'
+    return stringified_table
+  elseif type(something) == 'string' then
+    return '\"' .. tostring(something) .. '\"'
+  else
+    return tostring(something)
+  end
+end
+
 local function make_loaders(_, plugins, output_lua, should_profile)
   local loaders = {}
   local configs = {}
@@ -261,7 +313,7 @@ local function make_loaders(_, plugins, output_lua, should_profile)
       if plugin.config and not plugin.executable_config then
         plugin.simple_load = false
         plugin.executable_config = {}
-        if type(plugin.config) ~= 'table' then
+        if type(plugin.config) ~= 'table' or plugin.config[1] == nil then
           plugin.config = { plugin.config }
         end
         for i, config_item in ipairs(plugin.config) do
@@ -270,6 +322,12 @@ local function make_loaders(_, plugins, output_lua, should_profile)
             local bytecode
             executable_string, bytecode = make_try_loadstring(config_item, 'config', name)
             plugin.config[i] = bytecode
+          end
+          if type(config_item) == 'table' then
+            local stringified_item = stringify(config_item, 'config', name)
+            stringified_item = 'try_loadstring(\"' .. stringified_item .. '\", \"config\", \"' .. name .. '\")'
+            executable_string = stringified_item
+            plugin.config[i] = stringified_item
           end
 
           table.insert(plugin.executable_config, executable_string)
